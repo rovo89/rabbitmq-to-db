@@ -51,9 +51,6 @@ class PostgresHandler(Handler):
     else:
       await self._insert(cursor, self.values)
 
-    # TODO: Should we await that the ACK was successful?
-    self.clear()
-
   async def _insert(self, cursor: psycopg.AsyncClientCursor, values: list):
     if self.temp_table:
       await cursor.execute(f'CREATE TEMP TABLE IF NOT EXISTS {self.temp_table} (LIKE {self.table} INCLUDING DEFAULTS)')

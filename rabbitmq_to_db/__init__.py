@@ -92,6 +92,9 @@ class RabbitMqToDb:
       await self._db_work()
       await self.latest_message.ack(multiple=True)
 
+      for handler in self.handlers.values():
+        handler.clear()
+
       self.latest_message = None
       async with self.counter_condition:
         self.message_counter = 0
