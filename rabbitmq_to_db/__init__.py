@@ -3,7 +3,7 @@ import contextlib
 import json
 from datetime import datetime
 
-import psycopg2
+import psycopg
 from aio_pika.abc import AbstractChannel, AbstractIncomingMessage
 
 from .handlers import Handler, PostgresHandler
@@ -14,12 +14,14 @@ class PostgresConnector:
   def __init__(self, *args, **kwargs) -> None:
     self.args = args
     self.kwargs = kwargs
-    self.connect()
+    self.pg = None
 
-  def connect(self):
-    self.pg = psycopg2.connect(*self.args, **self.kwargs)
+  async def connect(self):
+    self.pg = await psycopg.AsyncConnection.connect(*self.args, **self.kwargs)
 
-  def connection(self):
+  async def connection(self):
+    if self.pg is None:
+      await self.connect()
     return self.pg
 
 ####################################################################################################
@@ -87,7 +89,7 @@ class RabbitMqToDb:
       if self.latest_message is None:
         return
 
-      await asyncio.to_thread(self._db_work)
+      await self._db_work()
       await self.latest_message.ack(multiple=True)
 
       self.latest_message = None
@@ -95,20 +97,20 @@ class RabbitMqToDb:
         self.message_counter = 0
         self.counter_condition.notify_all()
 
-  def _db_work(self, one_by_one=False):
+  async def _db_work(self, one_by_one=False):
     try:
       # TODO: Support different types of handlers.
-      pg = self.postgres_connector.connection()
+      pg = await self.postgres_connector.connection()
       cur = pg.cursor()
       for handler in self.handlers.values():
-        handler.flush(cur, one_by_one)
-      pg.commit()
-    except psycopg2.DatabaseError as error:
-      pg.rollback()
-      if 'ON CONFLICT DO UPDATE command cannot affect row a second time' in error.pgerror and not one_by_one:
-        self._db_work(True)
+        await handler.flush(cur, one_by_one)
+      await pg.commit()
+    except psycopg.DatabaseError as error:
+      await pg.rollback()
+      if 'ON CONFLICT DO UPDATE command cannot affect row a second time' in error.diag.message_primary and not one_by_one:
+        await self._db_work(True)
       else:
         raise error
     finally:
       if cur:
-        cur.close()
+        await cur.close()

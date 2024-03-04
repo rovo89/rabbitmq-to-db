@@ -1,6 +1,6 @@
 from abc import abstractmethod
 
-import psycopg2.extras
+import psycopg
 
 ####################################################################################################
 
@@ -24,13 +24,17 @@ class Handler:
 ####################################################################################################
 
 class PostgresHandler(Handler):
-  def __init__(self, table: str, key_fields: list[str], value_fields: list[str], template=None, page_size=100) -> None:
+  def __init__(self, table: str, key_fields: list[str], value_fields: list[str], use_temp_table=True) -> None:
     super().__init__()
+    self.table = table
     self.fields = [*key_fields, *value_fields]
-    # TODO: Escape table and field names?
-    self.sql = f"INSERT INTO {table} ({', '.join((self.fields))}) VALUES %s ON CONFLICT ({', '.join(key_fields)}) DO UPDATE SET {', '.join(map(lambda f: f'{f}=EXCLUDED.{f}', value_fields))}"
-    self.template = template
-    self.page_size = page_size
+    if use_temp_table:
+      self.temp_table = 'temp_' + self.table
+      self.copy_sql = f"COPY {self.temp_table} ({', '.join((self.fields))}) FROM STDIN"
+      self.insert_sql = f"INSERT INTO {self.table} SELECT * FROM {self.temp_table} ON CONFLICT ({', '.join(key_fields)}) DO UPDATE SET {', '.join(map(lambda f: f'{f}=EXCLUDED.{f}', value_fields))}"
+      self.truncate_sql = f"TRUNCATE {self.temp_table}"
+    else:
+      self.copy_sql = f"COPY {self.table} ({', '.join((self.fields))}) FROM STDIN"
 
   def add(self, data: dict) -> None:
     # TODO: Allow preprocessing via an argument?
@@ -40,8 +44,24 @@ class PostgresHandler(Handler):
   def needs_time(self) -> bool:
     return 'time' in self.fields
 
-  def flush(self, cursor, one_by_one):
-    page_size = 1 if one_by_one else self.page_size
-    psycopg2.extras.execute_values(cursor, self.sql, self.values, self.template, page_size)
+  async def flush(self, cursor: psycopg.AsyncClientCursor, one_by_one: bool):
+    if one_by_one:
+      for row in self.values:
+        await self._insert(cursor, [row])
+    else:
+      await self._insert(cursor, self.values)
+
     # TODO: Should we await that the ACK was successful?
     self.clear()
+
+  async def _insert(self, cursor: psycopg.AsyncClientCursor, values: list):
+    if self.temp_table:
+      await cursor.execute(f'CREATE TEMP TABLE IF NOT EXISTS {self.temp_table} (LIKE {self.table} INCLUDING DEFAULTS)')
+
+    async with cursor.copy(self.copy_sql) as copy:
+      for row in values:
+        await copy.write_row(row)
+
+    if self.temp_table:
+      await cursor.execute(self.insert_sql)
+      await cursor.execute(self.truncate_sql)
