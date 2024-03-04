@@ -1,6 +1,7 @@
 from abc import abstractmethod
 
 import psycopg
+from psycopg import sql
 
 ####################################################################################################
 
@@ -30,11 +31,22 @@ class PostgresHandler(Handler):
     self.fields = [*key_fields, *value_fields]
     if use_temp_table:
       self.temp_table = 'temp_' + self.table
-      self.copy_sql = f"COPY {self.temp_table} ({', '.join((self.fields))}) FROM STDIN"
-      self.insert_sql = f"INSERT INTO {self.table} SELECT * FROM {self.temp_table} ON CONFLICT ({', '.join(key_fields)}) DO UPDATE SET {', '.join(map(lambda f: f'{f}=EXCLUDED.{f}', value_fields))}"
-      self.truncate_sql = f"TRUNCATE {self.temp_table}"
+      copy_table = self.temp_table
+      self.create_table_sql = sql.SQL("CREATE TEMP TABLE IF NOT EXISTS {temp_table} (LIKE {table} INCLUDING DEFAULTS)").format(
+          table=sql.Identifier(self.table),
+          temp_table=sql.Identifier(self.temp_table))
+      self.insert_sql = sql.SQL("INSERT INTO {table} SELECT * FROM {temp_table} ON CONFLICT ({conflict_fields}) DO UPDATE SET {updates}").format(
+          table=sql.Identifier(self.table),
+          temp_table=sql.Identifier(self.temp_table),
+          conflict_fields=sql.SQL(', ').join(sql.Identifier(f) for f in key_fields),
+          updates=sql.SQL(', ').join(sql.SQL('{field}=EXCLUDED.{field}').format(field=sql.Identifier(f)) for f in value_fields))
+      self.truncate_sql = sql.SQL('TRUNCATE {}').format(sql.Identifier(self.temp_table))
     else:
-      self.copy_sql = f"COPY {self.table} ({', '.join((self.fields))}) FROM STDIN"
+      copy_table = self.table
+
+    self.copy_sql = sql.SQL("COPY {table} ({fields}) FROM STDIN").format(
+        table=sql.Identifier(copy_table),
+        fields=sql.SQL(', ').join(sql.Identifier(f) for f in self.fields))
 
   def add(self, data: dict) -> None:
     # TODO: Allow preprocessing via an argument?
@@ -53,7 +65,7 @@ class PostgresHandler(Handler):
 
   async def _insert(self, cursor: psycopg.AsyncClientCursor, values: list):
     if self.temp_table:
-      await cursor.execute(f'CREATE TEMP TABLE IF NOT EXISTS {self.temp_table} (LIKE {self.table} INCLUDING DEFAULTS)')
+      await cursor.execute(self.create_table_sql)
 
     async with cursor.copy(self.copy_sql) as copy:
       for row in values:
