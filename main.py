@@ -19,7 +19,7 @@ async def main() -> None:
 
   rmq2db = RabbitMqToDb(PostgresConnector(POSTGRES_DSN), flush_count=FLUSH_COUNT, flush_time=FLUSH_TIME)
   rmq2db.add_postgres_handler('roomtemp', key_fields=['time', 'room_id'], value_fields=['temp'])
-  rmq2db.add_postgres_handler('strom', key_fields=['time'], value_fields=['stand', 'leistung'])
+  rmq2db.add_postgres_handler('strom', key_fields=['time'], value_fields=['stand', 'stand_einspeisung', 'leistung'])
 
   connection = await aio_pika.connect(RABBITMQ_DSN)
   async with connection:
